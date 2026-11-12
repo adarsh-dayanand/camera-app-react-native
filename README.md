@@ -4,19 +4,18 @@ A free, no-paywall camera app built with React Native (Expo). Original design an
 inspired by the *category* of pro-style camera apps, not a copy of any specific app's branding or assets.
 
 ## Features
-- **Manual controls (PRO panel):**
-  - **Exposure:** manual ISO and shutter speed (logarithmic sliders), or auto with ±EV compensation
-  - **Focus:** manual focus distance (near → ∞), or continuous autofocus; tap the preview to focus
-  - **White balance:** presets (tungsten, fluorescent, daylight, cloudy) or a free 2500–8000 K slider
-  - **RAW:** capture unprocessed DNG, or JPEG
-  - A RESET button returns everything to auto. Controls the device doesn't support show "Not supported".
-- Photo & video capture, front/back camera, saved to your photo library
-- Zoom slider, flash (off/auto/on), torch, rule-of-thirds grid
-- Self-timer (3s / 10s), aspect ratio (4:3 / 16:9 / full), haptic shutter
-- In-app gallery of recent captures
-- Responsive: phones and tablets, portrait and landscape (controls move to a side rail in landscape;
-  larger touch targets and denser gallery grid on tablets)
-- Everything is free — there is no payment code of any kind
+**Exposure** — manual ISO + shutter speed (log sliders), auto with ±EV compensation, AE/AF lock,
+live "what the camera is actually using" ISO/shutter readout.
+**Focus** — manual focus distance (near → ∞) or continuous AF; tap-to-focus.
+**White balance** — presets (tungsten / fluorescent / daylight / cloudy) or free 2500–8000 K.
+**Photo** — JPEG / HEIC / RAW·DNG, processing priority (speed / balanced / quality), HDR, shutter sound.
+**Drive** — single, burst (3/5/10), exposure bracketing (3 frames, ±1 or ±2 EV; varies shutter when in manual), self-timer 3s/10s.
+**Video** — 720p / 1080p / 4K, 24/30/60 fps, stabilization (off / auto / cinematic), H.264 / HEVC.
+**Viewfinder aids** — live luminance histogram with highlight/shadow clipping warnings, level/horizon, composition grids
+(3×3, golden ratio, cross, diagonal), aspect ratio (4:3 / 16:9 / full).
+**Lenses** — ultra-wide / wide / telephoto selection (only the lenses your phone has are shown).
+**Also** — flash (off/auto/on), torch, zoom, front/back camera, in-app gallery. A RESET button returns all manual controls to auto.
+Everything is free — there is no payment code of any kind. Responsive for phones and tablets, portrait and landscape.
 
 ## Run
 Manual controls use `react-native-vision-camera` (native code), so **Expo Go will not work** —
@@ -28,9 +27,10 @@ npx expo run:ios          # needs macOS + Xcode
 ```
 
 ## Notes / limitations
-- Manual ISO/shutter/focus/WB and RAW depend on the phone's hardware and OS support. The app reads
-  the device's real limits at runtime and disables what isn't available. If RAW capture fails it falls
-  back to JPEG automatically.
-- Shutter is capped at 1 s in the UI. There is no histogram or focus peaking yet.
+- Everything depends on the phone's hardware/OS. The app reads the camera's real limits at runtime and
+  shows "Not supported" for anything missing; RAW/HEIC failures fall back to JPEG.
+- Not implemented: aperture control (phone lenses have fixed apertures), ISO-priority / shutter-priority
+  (the camera API only allows locking ISO and shutter together), geotagging, focus peaking / zebras.
+- The level indicator's tilt direction and the bracket/burst timing have not been tuned on hardware.
 - This code type-checks and bundles, and the native project generates (`expo prebuild`), but it has
   **not been run on a physical device** from this environment — expect to tweak on first run.

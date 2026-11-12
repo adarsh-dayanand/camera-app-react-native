@@ -4,6 +4,7 @@ import {
   Camera,
   CommonResolutions,
   useCameraDevice,
+  useCameraDevices,
   useCameraPermission,
   useMicrophonePermission,
   usePhotoOutput,
@@ -20,8 +21,22 @@ import { Segmented } from '../components/Segmented';
 import { ZoomSlider } from '../components/ZoomSlider';
 import { Grid } from '../components/Grid';
 import { ProPanel } from '../components/ProPanel';
-import type { PhotoFormat } from '../components/ProPanel';
+import type { Caps } from '../components/ProPanel';
+import { Histogram } from '../components/Histogram';
+import { LevelIndicator } from '../components/LevelIndicator';
 import { formatShutter, useManualControls } from '../hooks/useManualControls';
+import { useShootingSettings } from '../hooks/useShootingSettings';
+import type { Lens } from '../hooks/useShootingSettings';
+import { useHistogram } from '../hooks/useHistogram';
+import { useLevel } from '../hooks/useLevel';
+import { useLiveMeter } from '../hooks/useLiveMeter';
+
+const VIDEO_RES = {
+  '720': CommonResolutions.HD_16_9,
+  '1080': CommonResolutions.FHD_16_9,
+  '2160': CommonResolutions.UHD_16_9,
+} as const;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 type Mode = 'photo' | 'video';
 type Ratio = '4:3' | '16:9' | 'full';
@@ -43,13 +58,12 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
   const [facing, setFacing] = useState<CameraType>('back');
   const [flash, setFlash] = useState<FlashMode>('off');
   const [torch, setTorch] = useState(false);
-  const [grid, setGrid] = useState(true);
   const [ratio, setRatio] = useState<Ratio>('4:3');
   const [timer, setTimer] = useState<(typeof TIMERS)[number]>(0);
   const [zoom, setZoom] = useState(0); // 0..1 slider position
   const [ready, setReady] = useState(false);
   const [controller, setController] = useState<CameraController | undefined>();
-  const [format, setFormat] = useState<PhotoFormat>('jpeg');
+  const { s, set } = useShootingSettings();
   const [proOpen, setProOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -72,15 +86,51 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
     return () => clearTimeout(id);
   }, [toast]);
 
-  const device = useCameraDevice(facing);
+  const devices = useCameraDevices();
+  const lensFilter = facing === 'back' && s.lens !== 'auto' ? { physicalDevices: [s.lens] } : undefined;
+  const device = useCameraDevice(facing, lensFilter);
   const wide = ratio === '16:9';
+
+  // What this phone can actually do (drives which options the panel offers)
+  const caps: Caps = React.useMemo(() => {
+    const found = new Set<string>();
+    for (const d of devices) {
+      if (d.position !== 'back') continue;
+      found.add(d.type);
+      d.physicalDevices.forEach((p) => found.add(p.type));
+    }
+    const lenses: Lens[] = ['auto'];
+    (['ultra-wide-angle', 'wide-angle', 'telephoto'] as const).forEach((l) => found.has(l) && lenses.push(l));
+    return { lenses, hdr: !!device?.supportsPhotoHDR, codecs: ['h264', 'h265'] };
+  }, [devices, device]);
+
   const photoOutput = usePhotoOutput({
-    containerFormat: format,
+    containerFormat: s.format,
     targetResolution: wide ? CommonResolutions.UHD_16_9 : CommonResolutions.UHD_4_3,
     quality: 1,
+    qualityPrioritization: s.priority,
   });
-  const videoOutput = useVideoOutput({ enableAudio: micPerm.hasPermission });
+  const videoOutput = useVideoOutput({ enableAudio: micPerm.hasPermission, targetResolution: VIDEO_RES[s.videoRes] });
+  const hist = useHistogram();
   const manual = useManualControls(controller, setToast);
+  const tilt = useLevel(s.level, L.isLandscape);
+  const meter = useLiveMeter(controller, s.meter || proOpen);
+
+  const constraints = React.useMemo(
+    () => [
+      ...(s.hdr && caps.hdr ? [{ photoHDR: true }] : []),
+      { fps: s.fps },
+      { videoStabilizationMode: s.stab },
+    ],
+    [s.hdr, caps.hdr, s.fps, s.stab],
+  );
+
+  // Preferred video codec (only when the device reports support)
+  useEffect(() => {
+    try {
+      if (videoOutput.getSupportedVideoCodecs().includes(s.codec)) videoOutput.setOutputSettings({ codec: s.codec }).catch(() => {});
+    } catch {}
+  }, [videoOutput, s.codec]);
 
   // 0..1 slider -> real zoom factor (cap at 8x so the slider stays useful on 100x devices)
   const minZ = device?.minZoom ?? 1;
@@ -108,25 +158,59 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
     [libPerm?.granted, requestLib],
   );
 
+  const shootOne = useCallback(
+    async (flashMode: FlashMode) => {
+      const file = await photoOutput.capturePhotoToFile({ flashMode, enableShutterSound: s.shutterSound }, {});
+      await save(file.filePath.startsWith('file://') ? file.filePath : `file://${file.filePath}`);
+    },
+    [photoOutput, s.shutterSound, save],
+  );
+
   const capture = useCallback(async () => {
     if (!ready) return;
     setBusy(true);
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-      const file = await photoOutput.capturePhotoToFile({ flashMode: flash }, {});
-      const uri = file.filePath.startsWith('file://') ? file.filePath : `file://${file.filePath}`;
-      await save(uri);
-    } catch (e) {
-      if (format === 'dng') {
-        setFormat('jpeg');
-        setToast('RAW not available here — switched to JPEG');
+      if (s.drive === 'single') {
+        await shootOne(flash);
+      } else if (s.drive === 'burst') {
+        for (let i = 0; i < s.burstCount; i++) {
+          setToast(`Burst ${i + 1}/${s.burstCount}`);
+          await shootOne('off');
+        }
+      } else if (controller) {
+        // Auto-exposure bracketing: -step, 0, +step
+        const steps = [-s.bracketStep, 0, s.bracketStep];
+        const limits = manual.limits;
+        try {
+          for (const st of steps) {
+            if (manual.exposure === 'auto') {
+              const lo = limits?.minEv ?? -2;
+              const hi = limits?.maxEv ?? 2;
+              await controller.setExposureBias(Math.max(lo, Math.min(hi, manual.ev + st)));
+            } else if (limits) {
+              const d = Math.max(limits.minDur, Math.min(limits.maxDur, manual.shutter * Math.pow(2, st)));
+              await controller.setExposureLocked(d, manual.iso);
+            }
+            await sleep(350); // let the sensor settle
+            await shootOne('off');
+          }
+        } finally {
+          if (manual.exposure === 'auto') await controller.setExposureBias(manual.ev).catch(() => {});
+          else await controller.setExposureLocked(manual.shutter, manual.iso).catch(() => {});
+        }
+      }
+    } catch {
+      if (s.format !== 'jpeg') {
+        set('format', 'jpeg');
+        setToast(`${s.format === 'dng' ? 'RAW' : 'HEIC'} not available here — switched to JPEG`);
       } else {
         setToast('Capture failed');
       }
     } finally {
       setBusy(false);
     }
-  }, [ready, photoOutput, flash, format, save]);
+  }, [ready, s.drive, s.burstCount, s.bracketStep, s.format, flash, shootOne, controller, manual, set]);
 
   const runTimer = useCallback(
     async (then: () => void) => {
@@ -206,7 +290,8 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
               style={StyleSheet.absoluteFill}
               isActive
               device={device}
-              outputs={[photoOutput, videoOutput]}
+              outputs={s.histogram ? [photoOutput, videoOutput, hist.output] : [photoOutput, videoOutput]}
+              constraints={constraints}
               zoom={zoomFactor}
               exposure={manual.exposure === 'auto' ? manual.ev : 0}
               torchMode={torch ? 'on' : 'off'}
@@ -220,7 +305,8 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
               onError={(e) => setToast(e.message)}
             />
           ) : null}
-          {grid ? <Grid /> : null}
+          <Grid type={s.grid} />
+          {s.level ? <LevelIndicator degrees={tilt} /> : null}
 
           {/* Top tool strip */}
           <View style={[styles.topStrip, { top: rail ? L.insets.top + 8 : 10 }]}>
@@ -230,7 +316,7 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
             <IconButton label="Torch" glyph="☀" size={btn} active={torch} onPress={() => setTorch((t) => !t)} />
             <IconButton label="Timer" glyph="⏱" size={btn} active={timer > 0} badge={timer ? `${timer}s` : undefined}
               onPress={() => setTimer(TIMERS[(TIMERS.indexOf(timer) + 1) % TIMERS.length])} />
-            <IconButton label="Grid" glyph="▦" size={btn} active={grid} onPress={() => setGrid((g) => !g)} />
+            <IconButton label="Grid" glyph="▦" size={btn} active={s.grid !== 'off'} onPress={() => set('grid', s.grid === 'off' ? 'thirds' : 'off')} />
             <Pressable
               onPress={() => setProOpen((o) => !o)}
               accessibilityRole="button" accessibilityLabel="Pro controls"
@@ -245,15 +331,24 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
             </Pressable>
           </View>
 
-          {manual.exposure === 'manual' && !proOpen ? (
+          {s.histogram && !proOpen ? (
+            <View style={[styles.histWrap, { top: (rail ? L.insets.top : 0) + 10 + btn + 12 }]} pointerEvents="none">
+              <Histogram data={hist.data} width={Math.round(110 * Math.max(1, sc))} />
+            </View>
+          ) : null}
+
+          {s.meter && meter && !proOpen ? (
             <View style={styles.readout} pointerEvents="none">
-              <Text style={styles.readoutText}>ISO {manual.iso}  ·  {formatShutter(manual.shutter)}</Text>
+              <Text style={styles.readoutText}>
+                {manual.anyManual ? 'M ' : 'A '}ISO {meter.iso}  ·  {formatShutter(meter.shutter)}
+                {s.drive !== 'single' ? `  ·  ${s.drive === 'burst' ? 'BURST' : 'AEB'}` : ''}
+              </Text>
             </View>
           ) : null}
 
           {proOpen ? (
             <View style={styles.proWrap}>
-              <ProPanel m={manual} format={format} onFormat={setFormat} scale={sc} maxWidth={Math.min(L.width, 520)} />
+              <ProPanel m={manual} s={s} set={set} caps={caps} scale={sc} maxWidth={Math.min(L.width, 520)} />
             </View>
           ) : null}
 
@@ -340,6 +435,7 @@ const styles = StyleSheet.create({
   proWrap: { position: 'absolute', left: 8, right: 8, bottom: 8 },
   readout: { position: 'absolute', left: 12, bottom: 12, backgroundColor: colors.panel, paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.pill },
   readoutText: { color: colors.amber, fontWeight: '800', fontSize: 12, fontVariant: ['tabular-nums'] },
+  histWrap: { position: 'absolute', left: 10 },
   toast: { position: 'absolute', bottom: 16, alignSelf: 'center', backgroundColor: colors.panelSolid, paddingHorizontal: 14, paddingVertical: 8, borderRadius: radius.pill },
   toastText: { color: colors.text, fontSize: 13, fontWeight: '600' },
   deck: { backgroundColor: colors.ink, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'space-between' },

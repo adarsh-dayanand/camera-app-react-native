@@ -35,6 +35,7 @@ export function useManualControls(controller: CameraController | undefined, onEr
   const [lens, setLens] = useState(0.5);
   const [kelvin, setKelvin] = useState(5500);
   const [ev, setEv] = useState(0);
+  const [aeafLock, setAeafLock] = useState(false);
 
   // Serialise native calls so rapid slider drags can't interleave with a reset.
   const queue = useRef<Promise<void>>(Promise.resolve());
@@ -89,9 +90,14 @@ export function useManualControls(controller: CameraController | undefined, onEr
       if (exposure === 'manual' && limits.canExposure) await controller.setExposureLocked(shutter, iso);
       if (focus === 'manual' && limits.canFocus) await controller.setFocusLocked(lens);
       if (wb !== 'auto' && limits.canWb) await applyWb(controller, wbKelvin);
+      // AE/AF lock: freeze whatever is still automatic at its current value
+      if (aeafLock) {
+        if (exposure === 'auto' && limits.canExposure) await controller.lockCurrentExposure();
+        if (focus === 'auto' && limits.canFocus) await controller.lockCurrentFocus();
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controller, exposure, focus, wb === 'auto']);
+  }, [controller, exposure, focus, wb === 'auto', aeafLock]);
 
   useEffect(() => {
     if (controller && limits && exposure === 'manual' && limits.canExposure) {
@@ -110,17 +116,18 @@ export function useManualControls(controller: CameraController | undefined, onEr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wb, kelvin]);
 
-  const anyManual = exposure === 'manual' || focus === 'manual' || wb !== 'auto';
+  const anyManual = exposure === 'manual' || focus === 'manual' || wb !== 'auto' || aeafLock;
   const resetAll = useCallback(() => {
     setExposure('auto');
     setFocus('auto');
     setWb('auto');
     setEv(0);
+    setAeafLock(false);
   }, []);
 
   return {
     limits, exposure, setExposure, focus, setFocus, wb, setWb,
-    isoT, setIsoT, shutterT, setShutterT, lens, setLens, kelvin, setKelvin, ev, setEv,
+    aeafLock, setAeafLock, isoT, setIsoT, shutterT, setShutterT, lens, setLens, kelvin, setKelvin, ev, setEv,
     iso, shutter, wbKelvin, anyManual, resetAll,
   };
 }
