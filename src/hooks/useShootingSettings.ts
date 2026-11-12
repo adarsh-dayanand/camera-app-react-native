@@ -15,6 +15,7 @@ export type Settings = {
   hdr: boolean;
   priority: Priority;
   shutterSound: boolean;
+  geotag: boolean;
   drive: Drive;
   burstCount: 3 | 5 | 10;
   bracketStep: 1 | 2; // EV between frames
@@ -36,6 +37,7 @@ export const DEFAULT_SETTINGS: Settings = {
   hdr: false,
   priority: 'balanced',
   shutterSound: true,
+  geotag: false, // off by default: location is private
   drive: 'single',
   burstCount: 5,
   bracketStep: 1,

@@ -4,6 +4,8 @@ import { colors, radius } from '../theme';
 import { Segmented } from './Segmented';
 import { ZoomSlider } from './ZoomSlider';
 import { WB_PRESETS, formatShutter, useManualControls } from '../hooks/useManualControls';
+import type { ExposureKind } from '../hooks/useManualControls';
+import type { GeoState } from '../hooks/useGeotag';
 import type { Lens, Settings } from '../hooks/useShootingSettings';
 
 type Manual = ReturnType<typeof useManualControls>;
@@ -20,6 +22,7 @@ type Props = {
   s: Settings;
   set: <K extends keyof Settings>(k: K, v: Settings[K]) => void;
   caps: Caps;
+  geo: GeoState;
   scale: number;
   maxWidth: number;
 };
@@ -73,7 +76,7 @@ function Toggle({ label, on, onChange, hint }: { label: string; on: boolean; onC
 
 const Unsupported = () => <Text style={styles.note}>Not supported by this camera.</Text>;
 
-export function ProPanel({ m, s, set, caps, scale, maxWidth }: Props) {
+export function ProPanel({ m, s, set, caps, geo, scale, maxWidth }: Props) {
   const [tab, setTab] = useState<Tab>('exp');
   const L = m.limits;
   const fs = 12 * Math.max(1, scale);
@@ -97,16 +100,23 @@ export function ProPanel({ m, s, set, caps, scale, maxWidth }: Props) {
       <ScrollView style={{ maxHeight: 210 * Math.max(1, scale) }} showsVerticalScrollIndicator={false}>
         {tab === 'exp' && (
           <View>
-            <AutoManual v={m.exposure} on={m.setExposure} />
-            {m.exposure === 'auto' ? (
-              L?.canEv ? (
-                <Row label="Exposure comp." value={`${m.ev > 0 ? '+' : ''}${m.ev.toFixed(1)} EV`}>
-                  <Wide value={(m.ev - L.minEv) / (L.maxEv - L.minEv)} onChange={(t) => m.setEv(Math.round((L.minEv + t * (L.maxEv - L.minEv)) * 10) / 10)} />
-                </Row>
-              ) : (
-                <Unsupported />
-              )
-            ) : L?.canExposure ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <Segmented<ExposureKind>
+                options={[
+                  { key: 'auto', label: 'AUTO' },
+                  { key: 'manual', label: 'MANUAL' },
+                  { key: 'iso', label: 'ISO PRIORITY' },
+                  { key: 'shutter', label: 'SHUTTER PRIORITY' },
+                ]}
+                value={m.exposure}
+                onChange={m.setExposure}
+                fontSize={fs - 1}
+              />
+            </ScrollView>
+
+            {m.exposure !== 'auto' && !L?.canExposure ? <Unsupported /> : null}
+
+            {m.exposure === 'manual' && L?.canExposure ? (
               <>
                 <Row label="ISO" value={String(m.iso)}>
                   <Wide value={m.isoT} onChange={m.setIsoT} />
@@ -115,9 +125,57 @@ export function ProPanel({ m, s, set, caps, scale, maxWidth }: Props) {
                   <Wide value={m.shutterT} onChange={m.setShutterT} />
                 </Row>
               </>
-            ) : (
-              <Unsupported />
-            )}
+            ) : null}
+
+            {m.exposure === 'iso' && L?.canExposure ? (
+              <>
+                <Row label="ISO (yours)" value={String(m.iso)}>
+                  <Wide value={m.isoT} onChange={m.setIsoT} />
+                </Row>
+                <View style={styles.auto}>
+                  <Text style={styles.rowLabel}>Shutter · auto</Text>
+                  <Text style={styles.rowValue}>{formatShutter(m.shutter)}</Text>
+                </View>
+              </>
+            ) : null}
+
+            {m.exposure === 'shutter' && L?.canExposure ? (
+              <>
+                <Row label="Shutter (yours)" value={formatShutter(m.shutter)}>
+                  <Wide value={m.shutterT} onChange={m.setShutterT} />
+                </Row>
+                <View style={styles.auto}>
+                  <Text style={styles.rowLabel}>ISO · auto</Text>
+                  <Text style={styles.rowValue}>{m.iso}</Text>
+                </View>
+              </>
+            ) : null}
+
+            {m.priority && m.limitHit ? (
+              <Text style={[styles.note, { color: colors.danger }]}>
+                {m.limitHit === 'dark'
+                  ? m.exposure === 'iso' ? 'Too dark: longest shutter reached — raise ISO.' : 'Too dark: maximum ISO reached — use a slower shutter.'
+                  : m.exposure === 'iso' ? 'Too bright: fastest shutter reached — lower ISO.' : 'Too bright: minimum ISO reached — use a faster shutter.'}
+              </Text>
+            ) : null}
+            {m.priority ? (
+              <Text style={styles.note}>
+                {m.exposure === 'iso' ? 'You fix the ISO; the shutter speed follows the light.' : 'You fix the shutter speed; the ISO follows the light.'} Metered from the live image, so it reacts within about a second.
+              </Text>
+            ) : null}
+
+            {m.exposure === 'auto' || m.priority ? (
+              L?.canEv || m.priority ? (
+                <Row label="Exposure comp." value={`${m.ev > 0 ? '+' : ''}${m.ev.toFixed(1)} EV`}>
+                  <Wide
+                    value={(m.ev - (L?.minEv ?? -2)) / ((L?.maxEv ?? 2) - (L?.minEv ?? -2))}
+                    onChange={(t) => m.setEv(Math.round(((L?.minEv ?? -2) + t * ((L?.maxEv ?? 2) - (L?.minEv ?? -2))) * 10) / 10)}
+                  />
+                </Row>
+              ) : (
+                <Unsupported />
+              )
+            ) : null}
             <Toggle label="AE / AF lock" on={m.aeafLock} onChange={m.setAeafLock} hint="Freeze the current auto exposure and focus" />
           </View>
         )}
@@ -170,6 +228,17 @@ export function ProPanel({ m, s, set, caps, scale, maxWidth }: Props) {
             </Row>
             <Toggle label="HDR photo" on={s.hdr && caps.hdr} onChange={(v) => caps.hdr && set('hdr', v)} hint={caps.hdr ? 'Fuses several exposures for more range' : 'Not supported by this camera'} />
             <Toggle label="Shutter sound" on={s.shutterSound} onChange={(v) => set('shutterSound', v)} />
+            <Toggle
+              label="Geotag (GPS)"
+              on={s.geotag}
+              onChange={(v) => set('geotag', v)}
+              hint={
+                !s.geotag ? 'Embed your location in photos and videos'
+                : geo === 'fixed' ? 'GPS fix acquired — location is saved in the files'
+                : geo === 'denied' ? 'Location permission denied'
+                : 'Searching for GPS… photos taken now have no location'
+              }
+            />
           </View>
         )}
 
@@ -248,6 +317,7 @@ const styles = StyleSheet.create({
   rowHead: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
   rowLabel: { color: colors.muted, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 2 },
   rowValue: { color: colors.amber, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  auto: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, paddingVertical: 8, paddingHorizontal: 10, borderRadius: radius.sm, backgroundColor: 'rgba(255,255,255,0.06)' },
   note: { color: colors.muted, fontSize: 12, marginTop: 8, lineHeight: 17 },
   hint: { color: colors.muted, fontSize: 11, marginTop: 1 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },

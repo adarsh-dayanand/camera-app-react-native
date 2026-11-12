@@ -12,14 +12,17 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Lumen Cam needs the camera to take photos and videos.",
         "NSMicrophoneUsageDescription": "Lumen Cam needs the microphone to record video audio.",
-        "NSPhotoLibraryAddUsageDescription": "Lumen Cam saves your captures to your library."
+        "NSPhotoLibraryAddUsageDescription": "Lumen Cam saves your captures to your library.",
+        "NSLocationWhenInUseUsageDescription": "Lumen Cam uses your location to add GPS tags to photos and videos (only when Geotag is switched on)."
       }
     },
     "android": {
       "package": "com.example.lumencam",
       "permissions": [
         "CAMERA",
-        "RECORD_AUDIO"
+        "RECORD_AUDIO",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
       ]
     },
     "plugins": [

@@ -30,12 +30,14 @@ import type { Lens } from '../hooks/useShootingSettings';
 import { useHistogram } from '../hooks/useHistogram';
 import { useLevel } from '../hooks/useLevel';
 import { useLiveMeter } from '../hooks/useLiveMeter';
+import { useGeotag } from '../hooks/useGeotag';
 
 const VIDEO_RES = {
   '720': CommonResolutions.HD_16_9,
   '1080': CommonResolutions.FHD_16_9,
   '2160': CommonResolutions.UHD_16_9,
 } as const;
+const EXPO_TAG = { auto: 'A', manual: 'M', iso: 'ISO-P', shutter: 'S-P' } as const;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 type Mode = 'photo' | 'video';
@@ -112,7 +114,11 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
   });
   const videoOutput = useVideoOutput({ enableAudio: micPerm.hasPermission, targetResolution: VIDEO_RES[s.videoRes] });
   const hist = useHistogram();
-  const manual = useManualControls(controller, setToast);
+  const manual = useManualControls(controller, setToast, hist.data);
+  const geo = useGeotag(s.geotag, () => {
+    set('geotag', false);
+    setToast('Location permission denied');
+  });
   const tilt = useLevel(s.level, L.isLandscape);
   const meter = useLiveMeter(controller, s.meter || proOpen);
 
@@ -160,10 +166,10 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
 
   const shootOne = useCallback(
     async (flashMode: FlashMode) => {
-      const file = await photoOutput.capturePhotoToFile({ flashMode, enableShutterSound: s.shutterSound }, {});
+      const file = await photoOutput.capturePhotoToFile({ flashMode, enableShutterSound: s.shutterSound, location: geo.location }, {});
       await save(file.filePath.startsWith('file://') ? file.filePath : `file://${file.filePath}`);
     },
-    [photoOutput, s.shutterSound, save],
+    [photoOutput, s.shutterSound, geo.location, save],
   );
 
   const capture = useCallback(async () => {
@@ -179,12 +185,13 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
           await shootOne('off');
         }
       } else if (controller) {
+        manual.setHold(true); // pause the priority loop while bracketing
         // Auto-exposure bracketing: -step, 0, +step
         const steps = [-s.bracketStep, 0, s.bracketStep];
         const limits = manual.limits;
         try {
           for (const st of steps) {
-            if (manual.exposure === 'auto') {
+            if (!manual.locked) {
               const lo = limits?.minEv ?? -2;
               const hi = limits?.maxEv ?? 2;
               await controller.setExposureBias(Math.max(lo, Math.min(hi, manual.ev + st)));
@@ -196,8 +203,9 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
             await shootOne('off');
           }
         } finally {
-          if (manual.exposure === 'auto') await controller.setExposureBias(manual.ev).catch(() => {});
+          if (!manual.locked) await controller.setExposureBias(manual.ev).catch(() => {});
           else await controller.setExposureLocked(manual.shutter, manual.iso).catch(() => {});
+          manual.setHold(false);
         }
       }
     } catch {
@@ -234,7 +242,7 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
     }
     if (!micPerm.hasPermission) await micPerm.requestPermission();
     try {
-      const rec = await videoOutput.createRecorder({});
+      const rec = await videoOutput.createRecorder({ location: geo.location });
       recorder.current = rec;
       await rec.startRecording(
         (filePath) => {
@@ -251,7 +259,7 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
     } catch {
       setToast('Recording failed');
     }
-  }, [mode, runTimer, capture, ready, recording, micPerm, videoOutput, save]);
+  }, [mode, runTimer, capture, ready, recording, micPerm, videoOutput, geo.location, save]);
 
   if (!camPerm.hasPermission) {
     return (
@@ -290,7 +298,7 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
               style={StyleSheet.absoluteFill}
               isActive
               device={device}
-              outputs={s.histogram ? [photoOutput, videoOutput, hist.output] : [photoOutput, videoOutput]}
+              outputs={s.histogram || manual.priority ? [photoOutput, videoOutput, hist.output] : [photoOutput, videoOutput]}
               constraints={constraints}
               zoom={zoomFactor}
               exposure={manual.exposure === 'auto' ? manual.ev : 0}
@@ -340,15 +348,16 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
           {s.meter && meter && !proOpen ? (
             <View style={styles.readout} pointerEvents="none">
               <Text style={styles.readoutText}>
-                {manual.anyManual ? 'M ' : 'A '}ISO {meter.iso}  ·  {formatShutter(meter.shutter)}
+                {EXPO_TAG[manual.exposure]} ISO {meter.iso}  ·  {formatShutter(meter.shutter)}
                 {s.drive !== 'single' ? `  ·  ${s.drive === 'burst' ? 'BURST' : 'AEB'}` : ''}
+                {s.geotag ? (geo.state === 'fixed' ? '  ·  GPS' : '  ·  GPS…') : ''}
               </Text>
             </View>
           ) : null}
 
           {proOpen ? (
             <View style={styles.proWrap}>
-              <ProPanel m={manual} s={s} set={set} caps={caps} scale={sc} maxWidth={Math.min(L.width, 520)} />
+              <ProPanel m={manual} s={s} set={set} caps={caps} geo={geo.state} scale={sc} maxWidth={Math.min(L.width, 520)} />
             </View>
           ) : null}
 
