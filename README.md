@@ -4,6 +4,12 @@ A free, no-paywall camera app built with React Native (Expo). Original design an
 inspired by the *category* of pro-style camera apps, not a copy of any specific app's branding or assets.
 
 ## Features
+- **Manual controls (PRO panel):**
+  - **Exposure:** manual ISO and shutter speed (logarithmic sliders), or auto with ±EV compensation
+  - **Focus:** manual focus distance (near → ∞), or continuous autofocus; tap the preview to focus
+  - **White balance:** presets (tungsten, fluorescent, daylight, cloudy) or a free 2500–8000 K slider
+  - **RAW:** capture unprocessed DNG, or JPEG
+  - A RESET button returns everything to auto. Controls the device doesn't support show "Not supported".
 - Photo & video capture, front/back camera, saved to your photo library
 - Zoom slider, flash (off/auto/on), torch, rule-of-thirds grid
 - Self-timer (3s / 10s), aspect ratio (4:3 / 16:9 / full), haptic shutter
@@ -13,13 +19,18 @@ inspired by the *category* of pro-style camera apps, not a copy of any specific 
 - Everything is free — there is no payment code of any kind
 
 ## Run
+Manual controls use `react-native-vision-camera` (native code), so **Expo Go will not work** —
+use a development build on a real device:
 ```bash
 npm install
-npx expo start      # scan the QR with Expo Go, or press a / i for emulators
+npx expo run:android      # needs Android SDK + a USB-connected phone
+npx expo run:ios          # needs macOS + Xcode
 ```
-Camera needs a real device (or an emulator with a camera).
 
-## Limitations
-`expo-camera` does not expose manual ISO / shutter speed / white balance / RAW (DNG) capture.
-Adding those requires a native camera module (e.g. `react-native-vision-camera` with a dev build, or
-custom Camera2 / AVFoundation code) — this is the natural next step.
+## Notes / limitations
+- Manual ISO/shutter/focus/WB and RAW depend on the phone's hardware and OS support. The app reads
+  the device's real limits at runtime and disables what isn't available. If RAW capture fails it falls
+  back to JPEG automatically.
+- Shutter is capped at 1 s in the UI. There is no histogram or focus peaking yet.
+- This code type-checks and bundles, and the native project generates (`expo prebuild`), but it has
+  **not been run on a physical device** from this environment — expect to tweak on first run.

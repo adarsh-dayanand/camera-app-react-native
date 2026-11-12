@@ -17,17 +17,19 @@
     },
     "android": {
       "package": "com.example.lumencam",
-      "permissions": ["CAMERA", "RECORD_AUDIO"]
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO"
+      ]
     },
     "plugins": [
-      ["expo-camera", {
-        "cameraPermission": "Lumen Cam needs the camera to take photos and videos.",
-        "microphonePermission": "Lumen Cam needs the microphone to record video audio."
-      }],
-      ["expo-media-library", {
-        "photosPermission": "Lumen Cam shows your captures in its gallery.",
-        "savePhotosPermission": "Lumen Cam saves your captures to your library."
-      }]
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Lumen Cam shows your captures in its gallery.",
+          "savePhotosPermission": "Lumen Cam saves your captures to your library."
+        }
+      ]
     ]
   }
 }

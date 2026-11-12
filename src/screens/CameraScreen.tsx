@@ -1,7 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
-import type { CameraType, FlashMode } from 'expo-camera';
+import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Camera,
+  CommonResolutions,
+  useCameraDevice,
+  useCameraPermission,
+  useMicrophonePermission,
+  usePhotoOutput,
+  useVideoOutput,
+} from 'react-native-vision-camera';
+import type { CameraController, CameraRef, Recorder } from 'react-native-vision-camera';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Haptics from 'expo-haptics';
 import { colors, radius } from '../theme';
@@ -11,18 +19,24 @@ import { ShutterButton } from '../components/ShutterButton';
 import { Segmented } from '../components/Segmented';
 import { ZoomSlider } from '../components/ZoomSlider';
 import { Grid } from '../components/Grid';
+import { ProPanel } from '../components/ProPanel';
+import type { PhotoFormat } from '../components/ProPanel';
+import { formatShutter, useManualControls } from '../hooks/useManualControls';
 
 type Mode = 'photo' | 'video';
 type Ratio = '4:3' | '16:9' | 'full';
 const TIMERS = [0, 3, 10] as const;
+type FlashMode = 'off' | 'auto' | 'on';
+type CameraType = 'back' | 'front';
 const FLASH_CYCLE: FlashMode[] = ['off', 'auto', 'on'];
-const FLASH_GLYPH: Record<FlashMode, string> = { off: '⚡̸', auto: '⚡A', on: '⚡', screen: '☼' };
+const FLASH_GLYPH: Record<FlashMode, string> = { off: '⚡̸', auto: '⚡A', on: '⚡' };
 
 export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
   const L = useLayout();
-  const cam = useRef<CameraView>(null);
-  const [camPerm, requestCam] = useCameraPermissions();
-  const [micPerm, requestMic] = useMicrophonePermissions();
+  const cam = useRef<CameraRef>(null);
+  const recorder = useRef<Recorder | null>(null);
+  const camPerm = useCameraPermission();
+  const micPerm = useMicrophonePermission();
   const [libPerm, requestLib] = MediaLibrary.usePermissions({ writeOnly: true });
 
   const [mode, setMode] = useState<Mode>('photo');
@@ -32,8 +46,11 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
   const [grid, setGrid] = useState(true);
   const [ratio, setRatio] = useState<Ratio>('4:3');
   const [timer, setTimer] = useState<(typeof TIMERS)[number]>(0);
-  const [zoom, setZoom] = useState(0);
+  const [zoom, setZoom] = useState(0); // 0..1 slider position
   const [ready, setReady] = useState(false);
+  const [controller, setController] = useState<CameraController | undefined>();
+  const [format, setFormat] = useState<PhotoFormat>('jpeg');
+  const [proOpen, setProOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
@@ -54,6 +71,21 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
     const id = setTimeout(() => setToast(null), 2200);
     return () => clearTimeout(id);
   }, [toast]);
+
+  const device = useCameraDevice(facing);
+  const wide = ratio === '16:9';
+  const photoOutput = usePhotoOutput({
+    containerFormat: format,
+    targetResolution: wide ? CommonResolutions.UHD_16_9 : CommonResolutions.UHD_4_3,
+    quality: 1,
+  });
+  const videoOutput = useVideoOutput({ enableAudio: micPerm.hasPermission });
+  const manual = useManualControls(controller, setToast);
+
+  // 0..1 slider -> real zoom factor (cap at 8x so the slider stays useful on 100x devices)
+  const minZ = device?.minZoom ?? 1;
+  const maxZ = Math.min(device?.maxZoom ?? 1, 8);
+  const zoomFactor = minZ + zoom * Math.max(0, maxZ - minZ);
 
   const save = useCallback(
     async (uri: string) => {
@@ -77,18 +109,24 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
   );
 
   const capture = useCallback(async () => {
-    if (!cam.current || !ready) return;
+    if (!ready) return;
     setBusy(true);
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-      const pic = await cam.current.takePictureAsync({ quality: 1, exif: true });
-      if (pic?.uri) await save(pic.uri);
-    } catch {
-      setToast('Capture failed');
+      const file = await photoOutput.capturePhotoToFile({ flashMode: flash }, {});
+      const uri = file.filePath.startsWith('file://') ? file.filePath : `file://${file.filePath}`;
+      await save(uri);
+    } catch (e) {
+      if (format === 'dng') {
+        setFormat('jpeg');
+        setToast('RAW not available here — switched to JPEG');
+      } else {
+        setToast('Capture failed');
+      }
     } finally {
       setBusy(false);
     }
-  }, [ready, save]);
+  }, [ready, photoOutput, flash, format, save]);
 
   const runTimer = useCallback(
     async (then: () => void) => {
@@ -105,30 +143,38 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
 
   const onShutter = useCallback(async () => {
     if (mode === 'photo') return runTimer(capture);
-    if (!cam.current || !ready) return;
+    if (!ready) return;
     if (recording) {
-      cam.current.stopRecording();
+      await recorder.current?.stopRecording();
       return;
     }
-    if (!micPerm?.granted) await requestMic();
-    setRecording(true);
+    if (!micPerm.hasPermission) await micPerm.requestPermission();
     try {
-      const vid = await cam.current.recordAsync();
-      if (vid?.uri) await save(vid.uri);
+      const rec = await videoOutput.createRecorder({});
+      recorder.current = rec;
+      await rec.startRecording(
+        (filePath) => {
+          setRecording(false);
+          recorder.current = null;
+          save(filePath.startsWith('file://') ? filePath : `file://${filePath}`);
+        },
+        () => {
+          setRecording(false);
+          setToast('Recording failed');
+        },
+      );
+      setRecording(true);
     } catch {
       setToast('Recording failed');
-    } finally {
-      setRecording(false);
     }
-  }, [mode, runTimer, capture, ready, recording, micPerm?.granted, requestMic, save]);
+  }, [mode, runTimer, capture, ready, recording, micPerm, videoOutput, save]);
 
-  if (!camPerm) return <View style={styles.center} />;
-  if (!camPerm.granted) {
+  if (!camPerm.hasPermission) {
     return (
       <View style={styles.center}>
         <Text style={styles.permTitle}>Camera access needed</Text>
         <Text style={styles.permBody}>Lumen Cam needs the camera to show a live preview and take shots.</Text>
-        <Pressable style={styles.permBtn} onPress={requestCam} accessibilityRole="button">
+        <Pressable style={styles.permBtn} onPress={camPerm.requestPermission} accessibilityRole="button">
           <Text style={styles.permBtnText}>Allow camera</Text>
         </Pressable>
       </View>
@@ -147,25 +193,33 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
     ? { aspectRatio: rail ? 1 / ar : ar, [rail ? 'height' : 'width']: '100%' as const, maxWidth: '100%' as const, maxHeight: '100%' as const }
     : { flex: 1, alignSelf: 'stretch' as const };
 
-  const zoomLabel = `${(1 + zoom * 7).toFixed(1)}×`;
+  const zoomLabel = `${zoomFactor.toFixed(1)}×`;
 
   return (
     <View style={[styles.root, { flexDirection: rail ? 'row' : 'column' }]}>
       {/* ---- Preview area ---- */}
       <View style={[styles.stage, { paddingTop: rail ? 0 : L.insets.top, paddingLeft: L.insets.left }]}>
         <View style={[styles.previewBox, previewStyle]}>
-          <CameraView
-            ref={cam}
-            style={StyleSheet.absoluteFill}
-            facing={facing}
-            flash={flash}
-            enableTorch={torch}
-            mode={mode === 'video' ? 'video' : 'picture'}
-            zoom={zoom}
-            ratio={Platform.OS === 'android' && ratio !== 'full' ? ratio : undefined}
-            mirror={facing === 'front'}
-            onCameraReady={() => setReady(true)}
-          />
+          {device ? (
+            <Camera
+              ref={cam}
+              style={StyleSheet.absoluteFill}
+              isActive
+              device={device}
+              outputs={[photoOutput, videoOutput]}
+              zoom={zoomFactor}
+              exposure={manual.exposure === 'auto' ? manual.ev : 0}
+              torchMode={torch ? 'on' : 'off'}
+              resizeMode="cover"
+              enableNativeTapToFocusGesture
+              mirrorMode={facing === 'front' ? 'on' : 'off'}
+              onConfigured={() => {
+                setController(cam.current?.controller);
+                setReady(true);
+              }}
+              onError={(e) => setToast(e.message)}
+            />
+          ) : null}
           {grid ? <Grid /> : null}
 
           {/* Top tool strip */}
@@ -178,12 +232,30 @@ export function CameraScreen({ onOpenGallery }: { onOpenGallery: () => void }) {
               onPress={() => setTimer(TIMERS[(TIMERS.indexOf(timer) + 1) % TIMERS.length])} />
             <IconButton label="Grid" glyph="▦" size={btn} active={grid} onPress={() => setGrid((g) => !g)} />
             <Pressable
+              onPress={() => setProOpen((o) => !o)}
+              accessibilityRole="button" accessibilityLabel="Pro controls"
+              style={[styles.ratio, { height: btn }, (proOpen || manual.anyManual) && { backgroundColor: colors.amber }]}>
+              <Text style={[styles.ratioText, (proOpen || manual.anyManual) && { color: colors.ink }]}>PRO</Text>
+            </Pressable>
+            <Pressable
               onPress={() => setRatio((r) => (r === '4:3' ? '16:9' : r === '16:9' ? 'full' : '4:3'))}
               accessibilityRole="button" accessibilityLabel="Aspect ratio"
               style={[styles.ratio, { height: btn }]}>
               <Text style={styles.ratioText}>{ratio === 'full' ? 'FULL' : ratio}</Text>
             </Pressable>
           </View>
+
+          {manual.exposure === 'manual' && !proOpen ? (
+            <View style={styles.readout} pointerEvents="none">
+              <Text style={styles.readoutText}>ISO {manual.iso}  ·  {formatShutter(manual.shutter)}</Text>
+            </View>
+          ) : null}
+
+          {proOpen ? (
+            <View style={styles.proWrap}>
+              <ProPanel m={manual} format={format} onFormat={setFormat} scale={sc} maxWidth={Math.min(L.width, 520)} />
+            </View>
+          ) : null}
 
           {recording ? (
             <View style={[styles.recPill, { top: (rail ? L.insets.top : 0) + 10 + btn + 12 }]}>
@@ -265,6 +337,9 @@ const styles = StyleSheet.create({
   recText: { color: colors.text, fontWeight: '800', fontVariant: ['tabular-nums'] },
   countdown: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.25)' },
   countText: { color: colors.amber, fontWeight: '900' },
+  proWrap: { position: 'absolute', left: 8, right: 8, bottom: 8 },
+  readout: { position: 'absolute', left: 12, bottom: 12, backgroundColor: colors.panel, paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.pill },
+  readoutText: { color: colors.amber, fontWeight: '800', fontSize: 12, fontVariant: ['tabular-nums'] },
   toast: { position: 'absolute', bottom: 16, alignSelf: 'center', backgroundColor: colors.panelSolid, paddingHorizontal: 14, paddingVertical: 8, borderRadius: radius.pill },
   toastText: { color: colors.text, fontSize: 13, fontWeight: '600' },
   deck: { backgroundColor: colors.ink, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'space-between' },
