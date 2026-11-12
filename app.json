@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "Lumen Cam",
+    "slug": "lumen-cam",
+    "version": "1.0.0",
+    "orientation": "default",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.lumencam",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Lumen Cam needs the camera to take photos and videos.",
+        "NSMicrophoneUsageDescription": "Lumen Cam needs the microphone to record video audio.",
+        "NSPhotoLibraryAddUsageDescription": "Lumen Cam saves your captures to your library."
+      }
+    },
+    "android": {
+      "package": "com.example.lumencam",
+      "permissions": ["CAMERA", "RECORD_AUDIO"]
+    },
+    "plugins": [
+      ["expo-camera", {
+        "cameraPermission": "Lumen Cam needs the camera to take photos and videos.",
+        "microphonePermission": "Lumen Cam needs the microphone to record video audio."
+      }],
+      ["expo-media-library", {
+        "photosPermission": "Lumen Cam shows your captures in its gallery.",
+        "savePhotosPermission": "Lumen Cam saves your captures to your library."
+      }]
+    ]
+  }
+}
